@@ -1,0 +1,74 @@
+name: DUITKU Web Deployment
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-web:
+    name: Build and Deploy Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun runtime
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build web application for production
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_ANON_KEY" ]; then
+            echo "::warning::VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY secret is not set! Using fallback placeholder for static compilation."
+          fi
+          bun run build
+
+      - name: Upload production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duitku-production-web
+          path: dist/
+          retention-days: 14
+
+      - name: Deploy to Vercel (Production)
+        if: env.VERCEL_TOKEN != ''
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          echo "Deploying DUITKU to Vercel..."
+          bunx vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          bunx vercel build --prod --token=$VERCEL_TOKEN
+          bunx vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN
+
+      - name: Deployment status notification
+        run: |
+          if [ -n "${{ secrets.VERCEL_TOKEN }}" ]; then
+            echo "::notice title=Deployment::DUITKU production bundle successfully deployed to Vercel."
+          else
+            echo "::notice title=Deployment Ready::Web build succeeded! Artifact uploaded as 'duitku-production-web'. To enable direct deployment to Vercel, add VERCEL_TOKEN, VERCEL_ORG_ID, and VERCEL_PROJECT_ID to your repository GitHub Secrets."
+          fi

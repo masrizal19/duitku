@@ -1,0 +1,74 @@
+name: DUITKU CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Lint, Typecheck, and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Bun runtime
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies with frozen lockfile
+        run: bun install --frozen-lockfile
+
+      - name: Run linter
+        run: bun run lint
+
+      - name: Run type checking
+        run: bun run typecheck
+
+      - name: Run test suite
+        run: bun run test
+
+      - name: Build web application
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
+        run: bun run build
+
+      - name: Verify build outputs
+        run: |
+          if [ ! -f "dist/index.html" ]; then
+            echo "::error::Build verification failed! dist/index.html was not generated."
+            exit 1
+          fi
+          echo "Production build verified successfully. Bundle size summary:"
+          ls -lh dist
+          ls -lh dist/assets || true
+
+      - name: Upload production build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duitku-web-build
+          path: dist/
+          retention-days: 7
