@@ -22,14 +22,29 @@ export interface SignInResult {
   session: Session;
 }
 
-function getAuthRedirectUrl(): string {
+function getAppBaseUrl(): string {
+  const configuredAppUrl = (import.meta.env.VITE_APP_URL || '').trim().replace(/\/+$/, '');
   if (typeof window !== 'undefined') {
     if (window.location.hostname === 'duitku.mkverse.my.id') {
       return 'https://duitku.mkverse.my.id';
     }
     return window.location.origin;
   }
-  return 'https://duitku.mkverse.my.id';
+  return configuredAppUrl || 'https://duitku.mkverse.my.id';
+}
+
+export function isPasswordRecoveryUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '');
+  const hash = window.location.hash || '';
+  const searchParams = new URLSearchParams(window.location.search);
+
+  return (
+    normalizedPath === '/reset-password' ||
+    hash.includes('type=recovery') ||
+    hash.startsWith('#reset-password') ||
+    searchParams.get('type') === 'recovery'
+  );
 }
 
 function mapSupabaseUser(user: User): AuthUserInfo {
@@ -54,14 +69,14 @@ export const authService = {
     const { error } = await client.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: getAuthRedirectUrl(),
+        redirectTo: getAppBaseUrl(),
       },
     });
 
     if (error) throw error;
   },
 
-  // Sign in dengan Email & Password via Supabase Auth
+  // Sign in dengan Email & Password via Supabase Auth (tanpa mengubah password)
   async signInWithEmail(email: string, password: string): Promise<SignInResult> {
     const client = getSupabaseClient();
     const cleanEmail = email.trim().toLowerCase();
@@ -108,7 +123,7 @@ export const authService = {
       email: cleanEmail,
       password,
       options: {
-        emailRedirectTo: getAuthRedirectUrl(),
+        emailRedirectTo: getAppBaseUrl(),
         data: {
           full_name: cleanName,
           name: cleanName,
@@ -121,7 +136,6 @@ export const authService = {
       throw new Error('Pendaftaran gagal: Supabase tidak mengembalikan data akun.');
     }
 
-    // Supabase mengembalikan identities kosong jika email sudah terdaftar sebelumnya (saat confirm email aktif)
     if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
       throw new Error('Email ini sudah terdaftar di Supabase. Silakan masuk atau periksa email Anda.');
     }
@@ -133,6 +147,49 @@ export const authService = {
       session: data.session,
       requiresEmailConfirmation,
     };
+  },
+
+  // Kirim email reset kata sandi via Supabase Auth
+  async sendPasswordResetEmail(email: string): Promise<void> {
+    const client = getSupabaseClient();
+    const cleanEmail = email.trim().toLowerCase();
+
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Masukkan alamat email yang valid.');
+    }
+
+    const redirectBase =
+      typeof window !== 'undefined' && window.location.hostname === 'localhost'
+        ? `${window.location.origin}/reset-password`
+        : 'https://duitku.mkverse.my.id/reset-password';
+
+    const { error } = await client.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: redirectBase,
+    });
+
+    if (error) throw error;
+  },
+
+  // Perbarui kata sandi baru selama sesi recovery aktif
+  async updatePassword(newPassword: string): Promise<void> {
+    const client = getSupabaseClient();
+
+    if (!newPassword || newPassword.length < 6) {
+      throw new Error('Kata sandi baru minimal 6 karakter.');
+    }
+
+    const { data: sessionData, error: sessionErr } = await client.auth.getSession();
+    if (sessionErr || !sessionData.session) {
+      throw new Error(
+        'Sesi pemulihan tidak valid atau sudah kedaluwarsa. Silakan minta tautan reset kata sandi baru.'
+      );
+    }
+
+    const { error } = await client.auth.updateUser({
+      password: newPassword,
+    });
+
+    if (error) throw error;
   },
 
   // Ambil sesi aktif saat ini dari Supabase Auth
@@ -172,7 +229,10 @@ export const authService = {
   },
 
   // Auth State Listener tunggal tanpa race condition atau callback ganda
-  onAuthStateChange(callback: (user: AuthUserInfo | null) => void): () => void {
+  onAuthStateChange(
+    callback: (user: AuthUserInfo | null) => void,
+    onPasswordRecovery?: () => void
+  ): () => void {
     if (!supabase) {
       callback(null);
       return () => {};
@@ -195,6 +255,18 @@ export const authService = {
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!isActive) return;
 
+      if (event === 'PASSWORD_RECOVERY') {
+        initialResolved = true;
+        onPasswordRecovery?.();
+        return;
+      }
+
+      if (isPasswordRecoveryUrl() && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
+        initialResolved = true;
+        onPasswordRecovery?.();
+        return;
+      }
+
       if (event === 'INITIAL_SESSION') {
         initialResolved = true;
         emitUser(session);
@@ -207,7 +279,9 @@ export const authService = {
       }
 
       if (event === 'USER_UPDATED') {
-        emitUser(session, true);
+        if (!isPasswordRecoveryUrl()) {
+          emitUser(session, true);
+        }
         return;
       }
 
@@ -216,14 +290,15 @@ export const authService = {
         emitUser(session);
         return;
       }
-
-      // TOKEN_REFRESHED tidak perlu memicu reload penuh jika user id tetap sama
     });
 
-    // Pastikan getSession tetap diperiksa sebagai jaring pengaman jika INITIAL_SESSION tertunda
     supabase.auth.getSession().then(({ data, error }) => {
       if (!isActive || initialResolved) return;
       initialResolved = true;
+      if (isPasswordRecoveryUrl()) {
+        onPasswordRecovery?.();
+        return;
+      }
       emitUser(error ? null : data.session);
     });
 

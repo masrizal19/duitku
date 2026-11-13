@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { AuthScreen } from './components/AuthScreen';
+import { ResetPasswordView } from './components/ResetPasswordView';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
 import { DashboardView } from './components/views/DashboardView';
@@ -18,7 +19,7 @@ import { SettingsView } from './components/views/SettingsView';
 import { Icon } from './components/Icon';
 import { PAGES } from './utils/constants';
 import { ini } from './utils/formatters';
-import { authService, AuthUserInfo } from './services/auth';
+import { authService, AuthUserInfo, isPasswordRecoveryUrl } from './services/auth';
 import { dbService } from './services/db';
 import {
   Account,
@@ -37,6 +38,7 @@ export default function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [authLoadError, setAuthLoadError] = useState<string | null>(null);
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => isPasswordRecoveryUrl());
 
   // App data states
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -144,24 +146,33 @@ export default function App() {
   // 3. Auth Listener & Initial Data Load (menggunakan Supabase Auth murni)
   useEffect(() => {
     let active = true;
-    const unsubscribe = authService.onAuthStateChange(async (authUser) => {
-      if (!active) return;
-      setUser(authUser);
+    const unsubscribe = authService.onAuthStateChange(
+      async (authUser) => {
+        if (!active) return;
+        setUser(authUser);
 
-      if (authUser) {
-        await loadAuthenticatedUserData(authUser);
-      } else {
+        if (authUser) {
+          await loadAuthenticatedUserData(authUser);
+        } else {
+          setProfile(null);
+          setAuthLoadError(null);
+          setAccounts([]);
+          setCategories([]);
+          setTransactions([]);
+          setDebts([]);
+          setDebtPayments([]);
+          setBills([]);
+          setLoading(false);
+        }
+      },
+      () => {
+        if (!active) return;
+        setIsPasswordRecovery(true);
+        setUser(null);
         setProfile(null);
-        setAuthLoadError(null);
-        setAccounts([]);
-        setCategories([]);
-        setTransactions([]);
-        setDebts([]);
-        setDebtPayments([]);
-        setBills([]);
         setLoading(false);
       }
-    });
+    );
 
     return () => {
       active = false;
@@ -425,6 +436,29 @@ export default function App() {
     setQuickIncomeWalletId(walletId);
     navigateTo('tambah');
   };
+
+  // Tampilkan halaman reset password jika pengguna mengakses /reset-password atau callback PASSWORD_RECOVERY
+  if (isPasswordRecovery) {
+    return (
+      <>
+        <ResetPasswordView
+          onBackToLogin={() => {
+            window.history.replaceState({}, '', '/');
+            setIsPasswordRecovery(false);
+            setUser(null);
+            setLoading(false);
+          }}
+          onToast={showToast}
+        />
+        {toastMessage && (
+          <div className="toast">
+            <Icon name="check" />
+            {toastMessage}
+          </div>
+        )}
+      </>
+    );
+  }
 
   // Tampilkan loading screen saat memeriksa sesi atau memuat data akun dari Supabase
   if (loading) {
