@@ -1,46 +1,63 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const supabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
 
-// Validasi apakah environment variable Supabase telah dikonfigurasi dengan benar
-export const isSupabaseConfigured = Boolean(
-  supabaseUrl &&
+const hasValidUrl =
+  Boolean(supabaseUrl) &&
   supabaseUrl.startsWith('https://') &&
   !supabaseUrl.includes('your-project') &&
-  supabaseAnonKey &&
-  supabaseAnonKey.length > 20 &&
-  !supabaseAnonKey.includes('your-anon-key')
-);
+  !supabaseUrl.includes('placeholder');
 
-// Inisialisasi Supabase Client tunggal dengan penyimpanan sesi auth bawaan
-export const supabase: SupabaseClient = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://placeholder-duitku.supabase.co',
-  isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key-duitku',
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
+const hasValidKey =
+  Boolean(supabaseAnonKey) &&
+  supabaseAnonKey.length > 20 &&
+  !supabaseAnonKey.includes('your-anon-key') &&
+  !supabaseAnonKey.includes('placeholder');
+
+// Validasi apakah environment variable Supabase telah dikonfigurasi dengan benar
+export const isSupabaseConfigured = hasValidUrl && hasValidKey;
+
+export const supabaseConfigError: string | null = isSupabaseConfigured
+  ? null
+  : 'Konfigurasi Supabase tidak valid atau belum diisi. Pastikan VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY telah diatur di environment / GitHub Secrets.';
+
+// Inisialisasi Supabase Client hanya jika konfigurasi valid (tanpa placeholder)
+export const supabase: SupabaseClient | null = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
+  : null;
+
+export function getSupabaseClient(): SupabaseClient {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error(
+      supabaseConfigError ||
+        'Supabase belum dikonfigurasi. Tidak dapat melakukan autentikasi atau akses database.'
+    );
   }
-);
+  return supabase;
+}
 
 // Helper untuk menguji konektivitas langsung ke Supabase
 export async function testSupabaseConnection(): Promise<{ ok: boolean; message: string }> {
-  if (!isSupabaseConfigured) {
+  if (!supabase || !isSupabaseConfigured) {
     return {
       ok: false,
-      message: 'Kredensial VITE_SUPABASE_URL atau VITE_SUPABASE_ANON_KEY belum diisi di file .env',
+      message:
+        supabaseConfigError ||
+        'Kredensial VITE_SUPABASE_URL atau VITE_SUPABASE_ANON_KEY belum diisi.',
     };
   }
 
   try {
-    // Ping sederhana ke endpoint API Supabase melalui query ringan
     const { error } = await supabase.from('profiles').select('id').limit(1);
 
     if (error) {
-      // Jika error terkait permission/empty data, koneksi tetap terhubung
       if (error.code === 'PGRST116' || error.message.includes('permission denied') || error.code === '42501') {
         return { ok: true, message: 'Terhubung ke Supabase (RLS aktif)' };
       }

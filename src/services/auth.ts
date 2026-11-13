@@ -1,41 +1,60 @@
 // DUITKU - Supabase Authentication Service
-// Menggunakan built-in Supabase Auth (Email/Password & Google OAuth)
+// Menggunakan Supabase Auth asli secara penuh (tanpa Demo Mode atau akun lokal)
 
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { Session, User } from '@supabase/supabase-js';
+import { getSupabaseClient, supabase } from '../lib/supabase';
 
 export interface AuthUserInfo {
   uid: string;
   email: string;
   displayName: string;
   photoURL: string | null;
-  isDemo?: boolean;
 }
 
-// Fallback demo user jika kredensial Supabase di .env belum dimasukkan
-const DEMO_USER: AuthUserInfo = {
-  uid: '00000000-0000-0000-0000-000000000001',
-  email: 'demo@duitku.id',
-  displayName: 'Rina Anggraini',
-  photoURL: null,
-  isDemo: true,
-};
+export interface SignUpResult {
+  user: AuthUserInfo;
+  session: Session | null;
+  requiresEmailConfirmation: boolean;
+}
 
-let currentDemoUser: AuthUserInfo | null = null;
-const authSubscribers: Array<(user: AuthUserInfo | null) => void> = [];
+export interface SignInResult {
+  user: AuthUserInfo;
+  session: Session;
+}
+
+function getAuthRedirectUrl(): string {
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'duitku.mkverse.my.id') {
+      return 'https://duitku.mkverse.my.id';
+    }
+    return window.location.origin;
+  }
+  return 'https://duitku.mkverse.my.id';
+}
+
+function mapSupabaseUser(user: User): AuthUserInfo {
+  const email = (user.email || '').trim().toLowerCase();
+  const displayName =
+    user.user_metadata?.full_name ||
+    user.user_metadata?.name ||
+    (email ? email.split('@')[0] : 'Pengguna DUITKU');
+
+  return {
+    uid: user.id,
+    email,
+    displayName: String(displayName).trim(),
+    photoURL: user.user_metadata?.avatar_url || null,
+  };
+}
 
 export const authService = {
   // Sign in dengan Google via Supabase OAuth
   async signInWithGoogle(): Promise<void> {
-    if (!isSupabaseConfigured) {
-      currentDemoUser = { ...DEMO_USER, displayName: 'Google User (Demo)' };
-      notifySubscribers(currentDemoUser);
-      return;
-    }
-
-    const { error } = await supabase.auth.signInWithOAuth({
+    const client = getSupabaseClient();
+    const { error } = await client.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: getAuthRedirectUrl(),
       },
     });
 
@@ -43,178 +62,174 @@ export const authService = {
   },
 
   // Sign in dengan Email & Password via Supabase Auth
-  async signInWithEmail(email: string, pass: string): Promise<AuthUserInfo> {
+  async signInWithEmail(email: string, password: string): Promise<SignInResult> {
+    const client = getSupabaseClient();
     const cleanEmail = email.trim().toLowerCase();
 
-    if (!isSupabaseConfigured) {
-      if (cleanEmail === 'demo@duitku.id') {
-        currentDemoUser = { ...DEMO_USER };
-      } else {
-        currentDemoUser = {
-          uid: '00000000-0000-0000-0000-' + btoa(cleanEmail).replace(/[^a-zA-Z0-9]/g, '').slice(0, 12).padStart(12, '0'),
-          email: cleanEmail,
-          displayName: cleanEmail.split('@')[0],
-          photoURL: null,
-          isDemo: true,
-        };
-      }
-      localStorage.setItem('dk_demo_session', JSON.stringify(currentDemoUser));
-      notifySubscribers(currentDemoUser);
-      return currentDemoUser;
+    if (!cleanEmail || !password) {
+      throw new Error('Isi email dan kata sandi.');
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await client.auth.signInWithPassword({
       email: cleanEmail,
-      password: pass,
+      password,
     });
 
     if (error) throw error;
-    if (!data.user) throw new Error('Pengguna tidak ditemukan.');
+    if (!data.user || !data.session) {
+      throw new Error(
+        'Sesi autentikasi tidak tersedia. Pastikan email sudah diverifikasi lalu coba masuk kembali.'
+      );
+    }
 
-    const userInfo: AuthUserInfo = {
-      uid: data.user.id,
-      email: data.user.email || cleanEmail,
-      displayName: data.user.user_metadata?.name || data.user.user_metadata?.full_name || cleanEmail.split('@')[0],
-      photoURL: data.user.user_metadata?.avatar_url || null,
+    return {
+      user: mapSupabaseUser(data.user),
+      session: data.session,
     };
-
-    return userInfo;
   },
 
   // Sign up dengan Email, Password, dan Nama Lengkap via Supabase Auth
-  async signUpWithEmail(name: string, email: string, pass: string): Promise<AuthUserInfo> {
+  async signUpWithEmail(name: string, email: string, password: string): Promise<SignUpResult> {
+    const client = getSupabaseClient();
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
 
-    if (!isSupabaseConfigured) {
-      currentDemoUser = {
-        uid: '00000000-0000-0000-0000-' + Date.now().toString(16).padStart(12, '0'),
-        email: cleanEmail,
-        displayName: cleanName,
-        photoURL: null,
-        isDemo: true,
-      };
-      localStorage.setItem('dk_demo_session', JSON.stringify(currentDemoUser));
-      notifySubscribers(currentDemoUser);
-      return currentDemoUser;
+    if (!cleanName) {
+      throw new Error('Isi nama lengkap Anda.');
+    }
+    if (!cleanEmail) {
+      throw new Error('Isi alamat email yang valid.');
+    }
+    if (password.length < 6) {
+      throw new Error('Kata sandi minimal 6 karakter.');
     }
 
-    const { data, error } = await supabase.auth.signUp({
+    const { data, error } = await client.auth.signUp({
       email: cleanEmail,
-      password: pass,
+      password,
       options: {
+        emailRedirectTo: getAuthRedirectUrl(),
         data: {
+          full_name: cleanName,
           name: cleanName,
         },
       },
     });
 
     if (error) throw error;
-    if (!data.user) throw new Error('Pendaftaran gagal. Silakan coba lagi.');
+    if (!data.user) {
+      throw new Error('Pendaftaran gagal: Supabase tidak mengembalikan data akun.');
+    }
+
+    // Supabase mengembalikan identities kosong jika email sudah terdaftar sebelumnya (saat confirm email aktif)
+    if (Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      throw new Error('Email ini sudah terdaftar di Supabase. Silakan masuk atau periksa email Anda.');
+    }
+
+    const requiresEmailConfirmation = !data.session;
 
     return {
-      uid: data.user.id,
-      email: data.user.email || cleanEmail,
-      displayName: cleanName || cleanEmail.split('@')[0],
-      photoURL: null,
+      user: mapSupabaseUser(data.user),
+      session: data.session,
+      requiresEmailConfirmation,
     };
   },
 
-  // Update profile nama pengguna
+  // Ambil sesi aktif saat ini dari Supabase Auth
+  async getSession(): Promise<Session | null> {
+    const client = getSupabaseClient();
+    const { data, error } = await client.auth.getSession();
+    if (error) throw error;
+    return data.session;
+  },
+
+  // Update metadata nama / avatar pengguna di Supabase Auth
   async updateUserProfile(displayName: string, photoURL?: string | null): Promise<void> {
-    if (!isSupabaseConfigured) {
-      if (currentDemoUser) {
-        currentDemoUser.displayName = displayName;
-        if (photoURL !== undefined) currentDemoUser.photoURL = photoURL;
-        localStorage.setItem('dk_demo_session', JSON.stringify(currentDemoUser));
-        notifySubscribers(currentDemoUser);
-      }
-      return;
+    const client = getSupabaseClient();
+    const cleanName = displayName.trim();
+
+    const { data: sessionData, error: sessionErr } = await client.auth.getSession();
+    if (sessionErr || !sessionData.session) {
+      throw new Error('Sesi autentikasi berakhir. Silakan masuk kembali.');
     }
 
-    await supabase.auth.updateUser({
+    const { error } = await client.auth.updateUser({
       data: {
-        name: displayName,
+        full_name: cleanName,
+        name: cleanName,
         ...(photoURL !== undefined ? { avatar_url: photoURL } : {}),
       },
     });
+
+    if (error) throw error;
   },
 
-  // Logout pengguna dari Supabase
+  // Logout pengguna dari Supabase Auth
   async signOut(): Promise<void> {
-    localStorage.removeItem('dk_demo_session');
-    currentDemoUser = null;
-    notifySubscribers(null);
-
-    if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
-    }
+    const client = getSupabaseClient();
+    const { error } = await client.auth.signOut();
+    if (error) throw error;
   },
 
-  // Auth State Listener dengan Supabase onAuthStateChange
+  // Auth State Listener tunggal tanpa race condition atau callback ganda
   onAuthStateChange(callback: (user: AuthUserInfo | null) => void): () => void {
-    authSubscribers.push(callback);
-
-    if (!isSupabaseConfigured) {
-      const saved = localStorage.getItem('dk_demo_session');
-      if (saved) {
-        try {
-          currentDemoUser = JSON.parse(saved);
-        } catch {
-          currentDemoUser = null;
-        }
-      }
-      setTimeout(() => callback(currentDemoUser), 10);
-      return () => {
-        const index = authSubscribers.indexOf(callback);
-        if (index > -1) authSubscribers.splice(index, 1);
-      };
+    if (!supabase) {
+      callback(null);
+      return () => {};
     }
 
-    // Periksa sesi yang sudah ada saat awal
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) {
-        const u = data.session.user;
-        callback({
-          uid: u.id,
-          email: u.email || '',
-          displayName: u.user_metadata?.name || u.user_metadata?.full_name || u.email?.split('@')[0] || 'Pengguna DUITKU',
-          photoURL: u.user_metadata?.avatar_url || null,
-        });
-      } else {
-        callback(null);
+    let isActive = true;
+    let initialResolved = false;
+    let lastEmittedUid: string | null | undefined = undefined;
+
+    const emitUser = (session: Session | null, force = false) => {
+      if (!isActive) return;
+      const nextUid = session?.user?.id || null;
+      if (!force && lastEmittedUid === nextUid) {
+        return;
       }
+      lastEmittedUid = nextUid;
+      callback(session?.user ? mapSupabaseUser(session.user) : null);
+    };
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isActive) return;
+
+      if (event === 'INITIAL_SESSION') {
+        initialResolved = true;
+        emitUser(session);
+        return;
+      }
+
+      if (event === 'SIGNED_OUT') {
+        emitUser(null);
+        return;
+      }
+
+      if (event === 'USER_UPDATED') {
+        emitUser(session, true);
+        return;
+      }
+
+      if (event === 'SIGNED_IN') {
+        initialResolved = true;
+        emitUser(session);
+        return;
+      }
+
+      // TOKEN_REFRESHED tidak perlu memicu reload penuh jika user id tetap sama
     });
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        const u = session.user;
-        const info: AuthUserInfo = {
-          uid: u.id,
-          email: u.email || '',
-          displayName: u.user_metadata?.name || u.user_metadata?.full_name || u.email?.split('@')[0] || 'Pengguna DUITKU',
-          photoURL: u.user_metadata?.avatar_url || null,
-        };
-        callback(info);
-      } else {
-        callback(null);
-      }
+    // Pastikan getSession tetap diperiksa sebagai jaring pengaman jika INITIAL_SESSION tertunda
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!isActive || initialResolved) return;
+      initialResolved = true;
+      emitUser(error ? null : data.session);
     });
 
     return () => {
+      isActive = false;
       authListener.subscription.unsubscribe();
-      const index = authSubscribers.indexOf(callback);
-      if (index > -1) authSubscribers.splice(index, 1);
     };
   },
 };
-
-function notifySubscribers(user: AuthUserInfo | null) {
-  authSubscribers.forEach((cb) => {
-    try {
-      cb(user);
-    } catch (e) {
-      console.error(e);
-    }
-  });
-}

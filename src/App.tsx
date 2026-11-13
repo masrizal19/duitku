@@ -36,6 +36,7 @@ export default function App() {
   const [user, setUser] = useState<AuthUserInfo | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [authLoadError, setAuthLoadError] = useState<string | null>(null);
 
   // App data states
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -103,44 +104,55 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'instant' });
   };
 
-  // 3. Auth Listener & Initial Data Load
+  const loadAuthenticatedUserData = async (authUser: AuthUserInfo) => {
+    setLoading(true);
+    setAuthLoadError(null);
+    try {
+      const prof = await dbService.initUserProfile(
+        authUser.uid,
+        authUser.email,
+        authUser.displayName,
+        authUser.photoURL
+      );
+      setProfile(prof);
+
+      // Muat data relasional dari Supabase sesuai RLS pengguna aktif
+      const [accs, cats, txs, dbts, dpmts, blls] = await Promise.all([
+        dbService.getAccounts(authUser.uid),
+        dbService.getCategories(authUser.uid),
+        dbService.getTransactions(authUser.uid),
+        dbService.getDebts(authUser.uid),
+        dbService.getDebtPayments(authUser.uid),
+        dbService.getBills(authUser.uid),
+      ]);
+
+      setAccounts(accs);
+      setCategories(cats);
+      setTransactions(txs);
+      setDebts(dbts);
+      setDebtPayments(dpmts);
+      setBills(blls);
+    } catch (err: any) {
+      setAuthLoadError(
+        err?.message || 'Gagal memuat profil dan data keuangan dari database Supabase.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // 3. Auth Listener & Initial Data Load (menggunakan Supabase Auth murni)
   useEffect(() => {
+    let active = true;
     const unsubscribe = authService.onAuthStateChange(async (authUser) => {
+      if (!active) return;
       setUser(authUser);
+
       if (authUser) {
-        setLoading(true);
-        try {
-          const prof = await dbService.initUserProfile(
-            authUser.uid,
-            authUser.email,
-            authUser.displayName,
-            authUser.photoURL
-          );
-          setProfile(prof);
-
-          // Muat data relasional dari Supabase
-          const [accs, cats, txs, dbts, dpmts, blls] = await Promise.all([
-            dbService.getAccounts(authUser.uid),
-            dbService.getCategories(authUser.uid),
-            dbService.getTransactions(authUser.uid),
-            dbService.getDebts(authUser.uid),
-            dbService.getDebtPayments(authUser.uid),
-            dbService.getBills(authUser.uid),
-          ]);
-
-          setAccounts(accs);
-          setCategories(cats);
-          setTransactions(txs);
-          setDebts(dbts);
-          setDebtPayments(dpmts);
-          setBills(blls);
-        } catch (err) {
-          console.error('Error loading user data:', err);
-        } finally {
-          setLoading(false);
-        }
+        await loadAuthenticatedUserData(authUser);
       } else {
         setProfile(null);
+        setAuthLoadError(null);
         setAccounts([]);
         setCategories([]);
         setTransactions([]);
@@ -151,7 +163,10 @@ export default function App() {
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   // Handler: Tambah Transaksi
@@ -367,27 +382,43 @@ export default function App() {
   // Handler: Update Nama & Avatar Profil
   const handleUpdateName = async (newName: string) => {
     if (!user) return;
-    await authService.updateUserProfile(newName);
-    await dbService.updateProfile(user.uid, { name: newName });
-    setProfile((prev) => (prev ? { ...prev, name: newName } : null));
+    try {
+      await authService.updateUserProfile(newName);
+      await dbService.updateProfile(user.uid, { full_name: newName, name: newName });
+      setProfile((prev) => (prev ? { ...prev, full_name: newName, name: newName } : null));
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal memperbarui nama profil');
+    }
   };
 
   const handleUpdateAvatar = async (avatarUrl: string | null) => {
     if (!user) return;
-    await authService.updateUserProfile(user.displayName, avatarUrl);
-    await dbService.updateProfile(user.uid, { avatar: avatarUrl });
-    setProfile((prev) => (prev ? { ...prev, avatar: avatarUrl } : null));
+    try {
+      await authService.updateUserProfile(profile?.full_name || user.displayName, avatarUrl);
+      await dbService.updateProfile(user.uid, { avatar_url: avatarUrl, avatar: avatarUrl });
+      setProfile((prev) => (prev ? { ...prev, avatar_url: avatarUrl, avatar: avatarUrl } : null));
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal memperbarui foto profil');
+    }
   };
 
   const handleUpdateSettings = async (newSettings: UserSettings) => {
     if (!user) return;
-    await dbService.updateSettings(user.uid, newSettings);
-    setProfile((prev) => (prev ? { ...prev, settings: newSettings } : null));
+    try {
+      await dbService.updateSettings(user.uid, newSettings);
+      setProfile((prev) => (prev ? { ...prev, settings: newSettings } : null));
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal menyimpan preferensi');
+    }
   };
 
   const handleLogout = async () => {
-    await authService.signOut();
-    showToast('Kamu sudah keluar');
+    try {
+      await authService.signOut();
+      showToast('Kamu sudah keluar');
+    } catch (err: any) {
+      showToast(err?.message || 'Gagal keluar dari akun');
+    }
   };
 
   const handleQuickIncome = (walletId: string) => {
@@ -395,8 +426,8 @@ export default function App() {
     navigateTo('tambah');
   };
 
-  // Tampilkan loading screen jika sesi belum selesai dicek
-  if (loading && !user) {
+  // Tampilkan loading screen saat memeriksa sesi atau memuat data akun dari Supabase
+  if (loading) {
     return (
       <div id="auth" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', background: 'var(--sf)' }}>
         <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
@@ -404,14 +435,16 @@ export default function App() {
             <Icon name="wallet" />
           </div>
           <h2 style={{ fontSize: '24px', fontWeight: 800, color: 'var(--ink)', margin: 0 }}>DUITKU</h2>
-          <p style={{ color: 'var(--mut)', fontSize: '14px', margin: 0 }}>Memuat data akun...</p>
+          <p style={{ color: 'var(--mut)', fontSize: '14px', margin: 0 }}>
+            {user ? 'Menghubungkan ke database Supabase...' : 'Memeriksa sesi autentikasi...'}
+          </p>
         </div>
       </div>
     );
   }
 
-  // Tampilkan Auth Screen jika belum login
-  if (!user && !loading) {
+  // Tampilkan Auth Screen jika belum memiliki sesi Supabase Auth
+  if (!user) {
     return (
       <>
         <AuthScreen
@@ -427,6 +460,61 @@ export default function App() {
           </div>
         )}
       </>
+    );
+  }
+
+  // Tampilkan error database jika profil / tabel Supabase gagal dimuat (jangan lanjut ke dashboard kosong)
+  if (authLoadError) {
+    return (
+      <div id="auth" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', background: 'var(--sf)', padding: '24px' }}>
+        <div className="card" style={{ maxWidth: '460px', width: '100%', padding: '28px', display: 'grid', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div className="lgm" style={{ width: '44px', height: '44px', borderRadius: '14px' }}>
+              <Icon name="wallet" />
+            </div>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '18px' }}>Gagal Memuat Akun</h2>
+              <p style={{ margin: '2px 0 0', fontSize: '13px', color: 'var(--mut)' }}>
+                {user.email}
+              </p>
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: '12px 14px',
+              borderRadius: '14px',
+              background: 'rgba(224, 97, 138, 0.12)',
+              color: 'var(--neg)',
+              fontSize: '13px',
+              fontWeight: 600,
+              lineHeight: 1.5,
+            }}
+          >
+            {authLoadError}
+          </div>
+
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn lime"
+              style={{ flex: 1 }}
+              onClick={() => loadAuthenticatedUserData(user)}
+            >
+              <Icon name="history" />
+              Coba Lagi
+            </button>
+            <button
+              type="button"
+              className="chip"
+              onClick={handleLogout}
+            >
+              <Icon name="out" />
+              Keluar
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 

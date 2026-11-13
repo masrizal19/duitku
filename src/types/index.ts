@@ -6,12 +6,15 @@ export type DebtType = 'utang' | 'piutang';
 
 export interface Profile {
   id: string; // auth.users UUID
+  full_name: string;
   email: string;
+  avatar_url: string | null;
+  created_at?: string;
+  updated_at?: string;
+  // Properti UI lokal yang diturunkan dari full_name / avatar_url / preferensi lokal
   name: string;
   avatar: string | null;
   settings: UserSettings;
-  created_at?: string;
-  updated_at?: string;
 }
 
 export interface UserSettings {

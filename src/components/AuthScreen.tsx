@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { authService } from '../services/auth';
-import { isSupabaseConfigured } from '../lib/supabase';
+import { isSupabaseConfigured, supabaseConfigError } from '../lib/supabase';
 import { Icon } from './Icon';
 
 interface AuthScreenProps {
@@ -13,24 +13,50 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [confirmationNotice, setConfirmationNotice] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const mapAuthError = (err: any): string => {
+    const raw = err?.message || 'Terjadi kesalahan autentikasi.';
+    if (raw.includes('Invalid login credentials')) {
+      return 'Email atau kata sandi salah. Pastikan akun sudah terdaftar di Supabase.';
+    }
+    if (raw.includes('Email not confirmed')) {
+      return 'Email Anda belum diverifikasi. Silakan buka kotak masuk email Anda dan klik tautan verifikasi terlebih dahulu.';
+    }
+    if (raw.includes('User already registered')) {
+      return 'Email ini sudah terdaftar. Silakan masuk menggunakan akun tersebut.';
+    }
+    return raw;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setConfirmationNotice('');
 
-    const cleanEmail = email.trim();
-    if (!cleanEmail || !password) {
-      setError('Isi email dan kata sandi.');
+    if (!isSupabaseConfigured) {
+      setError(
+        supabaseConfigError ||
+          'Konfigurasi Supabase belum tersedia. Hubungi pengelola untuk mengatur VITE_SUPABASE_URL dan VITE_SUPABASE_ANON_KEY.'
+      );
       return;
     }
 
-    if (mode === 'daftar' && !name.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+
+    if (mode === 'daftar' && !cleanName) {
       setError('Isi nama lengkap.');
       return;
     }
 
-    if (password.length < 6) {
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setError('Masukkan alamat email yang valid.');
+      return;
+    }
+
+    if (!password || password.length < 6) {
       setError('Kata sandi minimal 6 karakter.');
       return;
     }
@@ -38,20 +64,22 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
     setLoading(true);
     try {
       if (mode === 'login') {
-        const u = await authService.signInWithEmail(cleanEmail, password);
-        onSuccess(`Halo, ${u.displayName.split(' ')[0]}`);
+        const result = await authService.signInWithEmail(cleanEmail, password);
+        onSuccess(`Halo, ${result.user.displayName.split(' ')[0]}`);
       } else {
-        const u = await authService.signUpWithEmail(name, cleanEmail, password);
-        onSuccess(`Selamat datang di DUITKU, ${u.displayName.split(' ')[0]}`);
+        const result = await authService.signUpWithEmail(cleanName, cleanEmail, password);
+        if (result.requiresEmailConfirmation || !result.session) {
+          setConfirmationNotice(
+            `Akun berhasil didaftarkan untuk ${cleanEmail}. Periksa kotak masuk email (termasuk folder Spam) dan klik tautan verifikasi sebelum masuk.`
+          );
+          setPassword('');
+          setMode('login');
+          return;
+        }
+        onSuccess(`Selamat datang di DUITKU, ${result.user.displayName.split(' ')[0]}`);
       }
     } catch (err: any) {
-      let msg = err.message || 'Terjadi kesalahan saat masuk.';
-      if (msg.includes('Invalid login credentials')) {
-        msg = 'Email atau kata sandi tidak cocok. Belum punya akun? Pilih Daftar.';
-      } else if (msg.includes('User already registered')) {
-        msg = 'Email ini sudah terdaftar. Silakan masuk.';
-      }
-      setError(msg);
+      setError(mapAuthError(err));
     } finally {
       setLoading(false);
     }
@@ -59,22 +87,23 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
 
   const handleGoogleSignIn = async () => {
     setError('');
+    setConfirmationNotice('');
+
+    if (!isSupabaseConfigured) {
+      setError(
+        supabaseConfigError ||
+          'Konfigurasi Supabase belum tersedia. Login Google tidak dapat dilakukan.'
+      );
+      return;
+    }
+
     setLoading(true);
     try {
       await authService.signInWithGoogle();
-      onSuccess('Mengarahkan ke Google Sign-In...');
     } catch (err: any) {
-      console.error(err);
-      setError('Gagal masuk dengan Google: ' + (err.message || 'Coba lagi nanti.'));
-    } finally {
+      setError('Gagal masuk dengan Google: ' + (err?.message || 'Coba lagi nanti.'));
       setLoading(false);
     }
-  };
-
-  const handleDemoFill = () => {
-    setEmail('demo@duitku.id');
-    setPassword('demo1234');
-    setError('');
   };
 
   return (
@@ -93,12 +122,28 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
         </div>
 
         <div className="ar" id="af">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
             <h2>{mode === 'daftar' ? 'Buat akun DUITKU' : 'Masuk ke DUITKU'}</h2>
-            <em className={`bdg ${isSupabaseConfigured ? 'lm' : ''}`}>
-              {isSupabaseConfigured ? '● Supabase Active' : '● Demo Mode'}
+            <em className={`bdg ${isSupabaseConfigured ? 'lm' : 'rd'}`}>
+              {isSupabaseConfigured ? '● Supabase Auth' : '● Config Error'}
             </em>
           </div>
+
+          {!isSupabaseConfigured && (
+            <div
+              style={{
+                padding: '12px 14px',
+                borderRadius: '14px',
+                background: 'rgba(224, 97, 138, 0.12)',
+                color: 'var(--neg)',
+                fontSize: '13px',
+                fontWeight: 600,
+                lineHeight: 1.45,
+              }}
+            >
+              {supabaseConfigError}
+            </div>
+          )}
 
           <div className="chips">
             <button
@@ -117,6 +162,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
               onClick={() => {
                 setMode('daftar');
                 setError('');
+                setConfirmationNotice('');
               }}
             >
               Daftar
@@ -133,7 +179,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
                   placeholder="Nama lengkap Anda"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  disabled={loading}
+                  disabled={loading || !isSupabaseConfigured}
                 />
               </label>
             )}
@@ -146,7 +192,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
                 placeholder="nama@email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                disabled={loading}
+                disabled={loading || !isSupabaseConfigured}
               />
             </label>
 
@@ -158,28 +204,49 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
                 placeholder="Minimal 6 karakter"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
+                disabled={loading || !isSupabaseConfigured}
               />
             </label>
 
-            {error ? <p className="er" id="er">{error}</p> : <p className="er" id="er" style={{ minHeight: '18px' }} />}
+            {confirmationNotice && (
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '14px',
+                  background: 'rgba(211, 247, 95, 0.22)',
+                  color: 'var(--ink)',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  lineHeight: 1.45,
+                }}
+              >
+                {confirmationNotice}
+              </div>
+            )}
+
+            {error ? (
+              <p className="er" id="er">
+                {error}
+              </p>
+            ) : (
+              <p className="er" id="er" style={{ minHeight: '18px' }} />
+            )}
 
             <button
               type="submit"
               className="btn lime"
               style={{ padding: '16px', width: '100%' }}
-              disabled={loading}
+              disabled={loading || !isSupabaseConfigured}
             >
               <Icon name="check" />
               {loading ? 'Memproses...' : mode === 'daftar' ? 'Daftar sekarang' : 'Masuk'}
             </button>
 
-            {/* Google Sign In asli */}
             <button
               type="button"
               className="btn google"
               onClick={handleGoogleSignIn}
-              disabled={loading}
+              disabled={loading || !isSupabaseConfigured}
               style={{
                 padding: '14px',
                 width: '100%',
@@ -212,12 +279,6 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onSuccess }) => {
               Masuk dengan Google
             </button>
           </form>
-
-          {mode === 'login' && (
-            <p className="mu" style={{ cursor: 'pointer', textAlign: 'center', marginTop: '6px' }} onClick={handleDemoFill}>
-              Coba akun demo: <strong style={{ textDecoration: 'underline' }}>demo@duitku.id</strong>, kata sandi <strong style={{ textDecoration: 'underline' }}>demo1234</strong>
-            </p>
-          )}
         </div>
       </div>
     </div>
