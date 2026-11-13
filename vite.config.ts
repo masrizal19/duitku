@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 
 export default defineConfig(() => {
   return {
+    base: '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

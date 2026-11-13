@@ -118,7 +118,7 @@ Repositori ini telah dilengkapi dengan 4 pipeline otomatis di `.github/workflows
 | Workflow | File | Trigger | Tujuan |
 | :--- | :--- | :--- | :--- |
 | **CI Validation** | `.github/workflows/ci.yml` | `push` ke `main`, `pull_request` ke `main` | Linting (`tsc --noEmit`), type checking, test, dan uji production build menggunakan Bun. |
-| **Web Deployment** | `.github/workflows/deploy-web.yml` | `push` ke `main`, `workflow_dispatch` | Build web bundle production, upload artifact, dan deploy otomatis ke Vercel jika token tersedia. |
+| **Web Deployment** | `.github/workflows/deploy-web.yml` | `push` ke `main`, `workflow_dispatch` | Build web bundle production menggunakan Bun dan deploy otomatis ke GitHub Pages (`duitku.mkverse.my.id`). |
 | **Android Build** | `.github/workflows/build-android.yml` | `push` (jika `android/**` berubah), `workflow_dispatch` | Build APK Debug dan Release App Bundle (.aab) menggunakan Capacitor & Gradle wrapper. |
 | **Release Publisher** | `.github/workflows/release.yml` | `push` tag `v*.*.*`, `workflow_dispatch` | Publikasi GitHub Release, pembuatan changelog, dan melampirkan file bundle web & APK/AAB. |
 
@@ -132,12 +132,7 @@ Buka repositori Anda di GitHub: **`masrizal19/duitku`** > **Settings** > **Secre
 * `VITE_SUPABASE_URL`: URL project Supabase Anda (misal `https://xyzcompany.supabase.co`).
 * `VITE_SUPABASE_ANON_KEY`: Kunci publik anonim Supabase (bukan `SERVICE_ROLE_KEY`).
 
-### 2. Opsional untuk Deployment Web Otomatis ke Vercel
-* `VERCEL_TOKEN`: Token API Vercel dari [Vercel Account Tokens](https://vercel.com/account/tokens).
-* `VERCEL_ORG_ID`: ID organisasi atau user Vercel (bisa dilihat di `.vercel/project.json` setelah `vercel link`).
-* `VERCEL_PROJECT_ID`: ID proyek di Vercel.
-
-### 3. Opsional untuk Penandatanganan Rilis Android (Signing APK & AAB)
+### 2. Opsional untuk Penandatanganan Rilis Android (Signing APK & AAB)
 * `ANDROID_KEYSTORE_BASE64`: File keystore Android Anda yang di-encode ke base64 (`base64 -w 0 release.keystore`).
 * `ANDROID_KEYSTORE_PASSWORD`: Password keystore.
 * `ANDROID_KEY_ALIAS`: Alias key penandatangan.
@@ -152,10 +147,12 @@ Buka repositori Anda di GitHub: **`masrizal19/duitku`** > **Settings** > **Secre
 2. Jika ada notifikasi "Workflows aren't being run on this repository", klik tombol hijau **I understand my workflows, go ahead and enable them**.
 3. Pastikan branch default Anda adalah `main`. Setiap `git push origin main` akan otomatis menjalankan workflow CI dan Web Deployment.
 
-### 2. Cara Melakukan Deployment Web
-* **Metode 1 (Vercel Direct via Git)**: Hubungkan repositori GitHub `masrizal19/duitku` langsung di dashboard Vercel. Vercel akan otomatis mendeteksi konfigurasi `vercel.json` dan variabel environment.
-* **Metode 2 (GitHub Actions ke Vercel)**: Tambahkan secret `VERCEL_TOKEN`, `VERCEL_ORG_ID`, dan `VERCEL_PROJECT_ID`. Workflow `.github/workflows/deploy-web.yml` akan otomatis men-deploy bundle hasil build saat ada perubahan di branch `main`.
-* **Metode 3 (Unduh Artifact Mandiri)**: Jika tidak menggunakan Vercel, buka tab **Actions** > pilih run **DUITKU Web Deployment** terakhir > unduh artifact `duitku-production-web` yang berisi file web siap hosting di static server / CDN mana pun.
+### 2. Cara Melakukan Deployment Web (GitHub Pages)
+1. Buka **Settings** > **Pages** di repositori `masrizal19/duitku`.
+2. Pada bagian **Build and deployment**, pastikan **Source** diset ke **GitHub Actions**.
+3. Pastikan **Custom domain** terisi `duitku.mkverse.my.id` dengan DNS check berhasil dan **Enforce HTTPS** aktif.
+4. File `public/CNAME` otomatis disalin menjadi `dist/CNAME` saat build (`bun run build`) dengan `base: '/'` di `vite.config.ts`.
+5. Setiap push ke branch `main` (atau menjalankan **Run workflow** manual pada workflow **Deploy DUITKU to GitHub Pages**) akan membangun dan mempublikasikan situs langsung ke `https://duitku.mkverse.my.id`.
 
 ### 3. Persiapan & Pembangunan Aplikasi Android (Mobile)
 
@@ -198,7 +195,7 @@ git push origin main
 4. Klik pada nama artifact yang ingin diunduh:
    - `duitku-debug-apk`: File APK Android untuk pengujian langsung di HP.
    - `duitku-release-bundle`: File `.aab` untuk upload ke Google Play Console.
-   - `duitku-web-build` / `duitku-production-web`: File web bundle siap deploy.
+   - `duitku-web-build` / `github-pages`: File web bundle siap deploy.
 
 ### 5. Cara Merilis Versi Baru (GitHub Release)
 Untuk merilis versi resmi baru (misalnya `v1.0.0`):
